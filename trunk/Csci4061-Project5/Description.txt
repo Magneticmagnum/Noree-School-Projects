@@ -1,0 +1,95 @@
+CSci4061 Programming Assignment 5 Specification Socket 
+Programming and Performance Evaluation
+Due at 2pm on December 15th 2010
+1 Overview
+For Lab 5, you will implement the socket (HTTP  and file versions) functions we gave to you in the 
+form of object files in Lab4. You will write these functions using UNIX Sockets in C. Also, you will 
+compare the performance of your file-version-program when using different numbers of threads and 
+different cache replacement techniques. For this lab, you may disable the prefetcher threads.
+2 Socket Programming / Function Implementation
+In this lab, you will demonstrate your ability to use network sockets in C. To do this, you will 
+implement the routines that we provided to you in the previous lab. You should use your own code for 
+Lab 4 as the starting point. If you could not get this working, you may use the lab 4 solution.
+    The functions you will implement are: init, accept connection, get request, return result and return 
+error (for the latter two, we will help you with the simple HTTP headers that you need, given below). 
+You may find the function fdopen handy in turning a regular file descriptor into a FILE stream object 
+(this will allow easy high-level standard I/O operations on the socket). You should also set the server 
+socket to allow port reuse as discussed in class.
+    In addition, you will implement another cache replacement policy called least recently used (LRU). 
+LRU replaces the cache entry that was the least recently used, as the name implies. For example, if the 
+cache size is 3, and requests come in for pages A A A B C B and then a request for D arrives, then the 
+cache entry that held A would be replaced by D. If a request for E arrived next, then it would replace the 
+cache entry that held C.
+Your server should be configured to either have caching disabled (0), or enabled with either ”oldest” 
+(1) or LRU (2) cache replacement strategies.(If you implemented one of these two replacement polices
+in Lab 4, please implement the other one. Make sure you have these two replacement policies in Lab 5.)
+This is specified by the caching argument from Lab 4.
+3 File (STDIN) Versions of Functions
+You will need a file version of your web server. This version will be used for all performance testing. 
+This is important because the threads are able to exit when an end-of-file is reached (from the requestlist input file), which is great for timer placement for performance evaluation. Here are some things to 
+keep in mind:
+● The accept connection function should return 0 (representing standard input) if an end- of-file 
+has not yet been detected. Otherwise, it should return a negative value.● The get request function should (safely) fetch a line from standard input. If an end-of-file is 
+encountered, it should return -1 and every subsequent call to accept connection should return a 
+negative value.
+      The return result and return error functions are essentially no-ops. You should do nothing with the 
+data in memory; it should not be used, freed or written anywhere.
+4     HTTP Headers & Protocol
+When a browser makes a request to your web server, it will send it a formatted message very similar to 
+the text below. It is important to note that for this assignment, you only care about the contents of the 
+very first line. Everything else can safely be ignored.
+GET /path/to/file.html HTTP/1.1
+Host: your-machine.cselabs.umn.edu
+(other headers)
+(blank line)
+    When returning a file to the web browser, you must follow the HTTP protocol. Specifically, 
+if everything went OK, you should write back to the socket descriptor:
+HTTP/1.1 200 OK
+Content-Type: content-type-here
+Content-Length: num-bytes-here
+Connection: Close
+(blank line)
+File-contents-here
+    Similarly, if something went wrong, you should write back to the socket descriptor:
+HTTP/1.1 404 Not Found
+Content-Type: text/html
+Content-Length: num-bytes-here
+Connection: Close
+(blank line)
+Error-message-here
+5  Performance Evaluation
+You will evaluate the performance of your web server for a given request file (using the web server file 
+version). We will provide files that you can use with your server for testing. To time the server, place 
+timer code in your main thread that determines the elapsed wall-clock time taken in processing the 
+entire request file. Note: This is the total server  time taken to serve all the requests. You will then 
+compare your server performance: a) without caching, b) caching with oldest replacement, and c) 
+caching with LRU replacement.    You will also compare performance of server as a function of the number of dispatcher and worker 
+threads (fix the cache policy as oldest replacement). Vary the number of threads from 1, 5, 10 for each 
+(9 total experiments). Report your findings in README files that you submit with the rest of the 
+solution. Why do the results look like this?
+6 Simplifying Assumptions
+● The maximum number of dispatch threads will be 100
+● The maximum number of worker threads will be 100
+● The maximum size of the cache will be 100 entries
+● The maximum length of the request queue will be 100 requests
+● Any  HTTP request for a filename containing two consecutive periods or two consecutive 
+slashes (“..” or “//”) must automatically be detected as a bad request by our compiled code for 
+security reasons.
+7 Documentation
+Exactly as described in previous specifications in this course, you must provide a README file which 
+describes your program as previously outlined. At the top of your README file and main C source 
+file, please include the following comment:
+/* CSci4061 F2010 Assignment 5
+*section: one_digit_number
+*login: cselabs_login_name(login used to submit)
+*date: mm/dd/yy
+*name: full-name1, full_name2(for partner if you have a 
+partner)
+*id: id_for_first_name, id_for_partner(if you have a partner)
+*TESTED ON _________ */
+8 Grading
+(indentations, readability of code, use of defined constants rather than numbers)
+● Please make sure to pay attention to documentation and coding style. A perfectly working 
+program will not receive full credit if it is undocumented and very difficult to read.
+● We will use GCC version 4.2 to compile your code.
+● The grading will be done on cselabs machines only.
