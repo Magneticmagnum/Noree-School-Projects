@@ -1,0 +1,10 @@
+# Creates the models necessary to run sample_script
+type Refrigerator   label      Refrigerator activeDutyCycle 0.5 inactiveDutyCycle 0.3 onPeriod 3 onPower 300
+type WaterHeater    label      Waterheater maxLiters 200        onPower 3000
+type Toaster        label      Toaster
+type Microwave      label      Microwave
+type Stove          label      Stove
+type Oven           label      Oven
+type Dishwasher     label      Dishwasher
+type Television     label      Television
+type Shower         label      Shower
