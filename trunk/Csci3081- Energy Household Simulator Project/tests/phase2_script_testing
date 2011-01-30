@@ -1,0 +1,59 @@
+# This script, when run, will cause the person to run through one entire day
+# in the exact same manner as is stated in the phase2 directions.  It requires
+# the phase2_model_list to be run.
+#
+#
+sleeping          RandomTime  waking-up          6:30           7:00
+waking-up         Delay       maybe-shower       5
+maybe-shower      Choice      start-shower       dressing       0.5
+start-shower      Activate    showering          Shower         2 8 40
+showering         RandomDelay stop-shower        5              10
+stop-shower       Activate    dressing           Shower         0
+dressing          Delay       breakfast          15
+#
+#--------Breakfast-----------------#
+breakfast         Activate    makeCoffee         Refrigerator   0         
+makeCoffee        Activate    makeToast          Stove          2 HIGH 4
+makeToast         Activate    maybe-microwave    Toaster        0
+maybe-microwave   Choice      start-microwave    start-stove    0.5
+start-microwave   Activate    endBreakfast       Microwave      0
+start-stove       Activate    endBreakfast       Stove          2 MEDIUM 5
+endBreakfast      Activate    chooseWork         Refrigerator   0
+chooseWork        Choice      working            workingLate     0.5
+#
+#--------Early Dinner ---------------#
+working           RandomTime  useRefrigerator    17:30          18:00
+useRefrigerator   Activate    startMicrowave1    Refrigerator   0
+startMicrowave1   Activate    letRun1            Microwave      1 2
+letRun1           Delay       startMicrowave2    2
+startMicrowave2   Activate    letRun2            Microwave      1 2
+letRun2           Delay       startMicrowave3    2
+startMicrowave3   Activate    letRun3            Microwave      1 2
+letRun3           Delay       offRefrigerator    2
+offRefrigerator   Activate    maybe-dishwasher   Refrigerator   0
+maybe-dishwasher  Dishes      maybe-bath
+#
+#---------Late Dinner ---------------#
+workingLate       RandomTime  useRefrigerator    18:01          18:30
+useRefrigerator   Activate    startStoveDinner1   Refrigerator   0
+startStoveDinner1 Activate    startStoveDinner2  Stove          2 HIGH 15
+startStoveDinner2 Activate    startStoveDinner3  Stove          2 MEDIUM 20
+startStoveDinner3 Activate    maybe-oven         Stove          2 LOW 30
+maybe-oven        Choice      startOven          cooking        0.2
+startOven         Activate    cooking            Oven           0
+cooking           Delay       offRefrigerator  32
+offRefrigerator   Activate    useDishwasher      Refrigerator   0
+useDishwasher     Activate    maybe-bath         Dishwasher     0
+#
+#--------Bath? -----------------#
+maybe-bath        Choice      fill-tub1           start-tv       0.2
+fill-tub1         Activate    fill-tub2          Waterheater    2 25 42      
+fill-tub2         Activate    fill-tub3          Waterheater    2 25 42     
+fill-tub3         Activate    fill-tub4          Waterheater    2 25 42     
+fill-tub4         Activate    take-bath          Waterheater    2 25 42
+take-bath         RandomDelay start-tv           15 20        
+#
+#--------TV and Bed--------------#
+start-tv          Activate     watch-tv          Television     0
+watch-tv          RandomTime   stop-tv             11:00 11:30
+stop-tv           Activate     sleeping          Television     0
