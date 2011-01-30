@@ -1,0 +1,133 @@
+CSci 4061: Introduction to Operating Systems
+Assignment 3: Dynamic Memory Management
+Due: November 17 at 2pm. Please work in a group of 2 or 3. No individual submission!
+Purpose:
+In this assignment, you will become more familiar with the issues that surround dynamic
+memory management: dynamic memory allocation and deallocation. Understanding these issues
+is important in designing memory­efficient run­time systems, an important task of the systems
+programming. You will make use of Unix library/system calls for memory management:
+{re}malloc, free, memcpy. You will also measure the performance of your dynamic
+memory manager and show (hopefully) how you can outperform the Unix heap management
+routines! In addition, you will also learn about interrupt­driven programming (via alarm signals)
+and separately compiled functions.
+Description:
+1. Dynamic Memory Management Functions
+Dynamic memory allocation and deallocation in Unix is achieved via the malloc family of
+system calls along with free. However, for programs that wish to perform a great deal of allocation
+and deallocation, this introduces a lot of overhead due to the expense of making library/system calls. In
+addition, in some environments malloc may not be thread­safe or signal­handler­safe, meaning that
+dynamic memory allocation may not work correctly if called by threads or within signal handlers
+because of race conditions in the heap management routines.
+To combat these problems, you decide to write your own dynamic memory manager and make it
+available to applications that wish to utilize dynamic memory in a more convenient and efficient
+manner. Your memory manager will “manage” a pool of dynamic memory divided into a fixed number
+of fixed­size chunks. For example, the pool of dynamic memory might be 100 chunks of 64 bytes (a
+total of 6400 bytes). Since most applications will want memory chunks of some size corresponding to a
+data structure type, this is a reasonable restriction.
+Here is the interface of your memory manager. You must implement the following functions of
+the memory manager:
+// allocate all memory, returns ­1 on failure
+int mm_init (mm_t *MM, int how_many_chunks, int chunk_size);
+// get a chunk of memory (pointer to void), NULL on failure
+void *mm_get (mm_t *MM);
+// give back ‘chunk’ to the memory manager, don’t free it though!
+void mm_put (mm_t *MM, void *chunk);
+// release all memory back to the system
+void mm_release (mm_t *MM);
+Note that the mm_init function should allocate ALL of the memory ahead of time that the
+manager will use for mm_get and mm_put. This creates an upper bound to the total amount of
+memory that this mm_t can give out, which is not truly dynamic memory allocation, but is close
+enough for our purposes.The idea is that an application would declare a variable of type mm_t for each separate dynamic
+data structure they wished to manage. The main program would then initialize this variable by calling
+mm_init. After that, calls could be made from threads, signal handlers, or any other functions, to get
+or put memory chunks as needed by the program.
+Prior to defining any of these functions you will need to define the type mm_t. You will need to
+keep track of status of memory chunks (free or taken). Within mm_t, you are not allowed to use arrays
+of a fixed­size length. (You cannot assume anything about the maximum number of chunks.)
+We have provided the basic framework of these functions for you. We have left code
+comments for you to fill in your code in specific areas of these files. The file mm_public.c will
+contain your implementation of the memory manager routines and a timer that you can use. The file
+mm_public.h contains the definition of mm_t, which you must come up with. You will compile your
+memory manager as a separately compiled object file (without a main program). To do this type:
+gcc –c mm_public.c
+This should produce mm_public.o (assuming there are no errors). This file will be “linked in” with
+several main programs as described in the next section. For successful linking, you should include the
+mm_public.h header file at the top of the C files that use these memory management functions.
+2. Using the Memory Manager
+a) Is your Memory Manager more efficient than native malloc/free? To test this, create an
+MM instance of a given size (use 10,000 objects of size 64 bytes). Perform 10,000 mm_get’s followed
+by 10,000 mm_put’s and put a timer around this code. For an example of a Unix timer, look at the
+example we provided in timer_example(). Now, compare this performance against the time to
+perform 10,000 malloc’s of size 64 bytes followed by 10000 free’s.  You should be able to defeat
+the native calls! For the comparison, write two separate main programs, main_malloc.c and
+main_mm.c that work as described above. For main_mm.c (similarly for main_malloc.c), you
+would compile it as:
+gcc -o main_mm main_mm.c mm_public.o
+Don’t forget to include the correct headers in your main program for successful linking.
+b) Now you will use your memory manager for a fairly sophisticated application. As stated in
+the introduction, the use of malloc in signal handlers may be a problem, so it may be useful to use
+your memory manager within a signal handler to return allocated memory.
+You will implement a simple interrupt­driven message­handling capability using signals. Your
+application is a simple “server” that will receive a message and simply print its contents. However,
+the message is sent to the server in the form of packets (fixed­size message fragments). When all of the
+packets have arrived at the server, the message can be assembled in the server and printed out.
+Assembled means that all of the packets can be put together in one big memory­contiguous variable
+(hint: memcpy will be useful here). To model network communication to the server, packets will arrive
+asynchronously whenever an alarm goes off (SIGLARM). In reality, network communication would
+raise SIGIO to your process, but we will use SIGALRM for simplicity. We will provide the code that
+sends packets to your application. You will be manipulating pointers quite a bit including some
+elementary pointer arithmetic. We have provided a code­shell (packet_public.c) that requires you
+modify main, a routine called assemble_message, and the handler. We have also provided
+packet_public.h, which contains all of the packet/message structure definitions. 
+The changes you will make:In the handler:
+i) When a packet arrives (to the handler), you must buffer it somewhere. (Hint: your memory manager
+will be useful here). Each packet carries with it some data, a packet number (0, 1, ...) and the total
+number of packets for the message. Once you have copied the packet data into the memory
+provided by the memory manager, you will store it within the message_t structure.
+In main:
+ii) Set up the alarm handler, initialize the memory manager, and set up the timer. When all is done,
+deallocate the memory manager. In this simple server three messages are received and printed.
+The output should be:
+GOTIT:message=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccc
+cccccccccccccccccccccccccccccccccccccccccccc
+3 times all together
+In assemble_message:
+iii) allocate the completed memory­contiguous message (you can use malloc here since you are
+not in the handler) and assemble all of the stored up packets from the message_t structure into this
+memory. (Hint: you will use memcpy but you copy all of the packets). Pointer arithmetic will be
+needed.
+To compile: gcc -o packet packet_public.c mm.o
+3. Deliverables
+1. Files containing your code
+2. A README file
+3. A makefile that will compile your code and produce the proper binary executables.
+All files should be submitted using the SUBMIT utility. You can find a link to it on the class
+website. This is your official submission that we will grade. Please do not send your deliverables
+to the TAs. Also, the future submissions under the same homework title overwrite the previous
+submissions. Only the most recent submission is graded. Therefore, once you have submitted
+your final code before the deadline, do not accidentally resubmit your code again after the
+deadline because we will grade the most recent submission.
+4. Documentation
+You must include a README file which describes your program. It must contain:
+1. How to compile your program
+2. How to use the program from the shell (syntax)
+3. What exactly your program does (briefly)
+The README file should not be too long, as long as it properly describes the above points.
+Proper in this case means that a first­time user will be able to answer the above questions without
+any confusion after reading the README. Within your code you should write detailed
+comments, although you don’t need to comment every line of your code.
+At the top of your README file and main C source file, please include the following
+comment:1
+/*CSci4061 F2010 Project 3
+*names: full­name1, full_name2, … (for partners)*id: id_for_first_name, id_for_partner, … (for partners)
+/*
+Grading:
+5% – README file – tell us who did what
+20% – Documentation within code, coding and style 
+(indentations, readability of code, use of defined constants rather than numbers)
+75% – Test cases
+(correctness, error handing, meeting the specifications)
+1. Please make sure to pay attention to documentation and coding style. A perfectly working
+program will not receive full credit if it is undocumented and very difficult to read.
+2. The grading will be done on CSELabs machines only.
