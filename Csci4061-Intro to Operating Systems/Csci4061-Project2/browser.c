@@ -7,8 +7,38 @@
 #include <fcntl.h>
 #include <errno.h>
 
+#define MAX_TABS 10
+
 extern int errno;
 comm_channel channel[UNRECLAIMED_TAB_COUNTER];
+
+int run_tab(comm_channel channel, int index);
+int run_controller(comm_channel);
+
+// Function pointer cast for callback functions
+typedef void (*G_CALLBACK)(void);
+
+/* Array to maintain the available tab ID's.
+ The array index IDs[n - 1] will be 1 if n is available, 0 else. */
+int available_IDs[UNRECLAIMED_TAB_COUNTER];
+
+/*
+ * Name: getAvailableTabID
+ * No input arguments.
+ * Output arguments: the smallest available tab ID for the creation of a new tab.
+ *      Function: This function finds and returns the smallest available tab ID.
+ *      This allows the creation of a new tab without wasting unused tab IDs.
+ */
+int getAvailableTabID(void) {
+	int i, ID = -1;
+	for (i = 1; i <= UNRECLAIMED_TAB_COUNTER; i++) {
+		if (available_IDs[i - 1] == 1) {
+			ID = i;
+			break;
+		}
+	}
+	return ID; // No available tab ID's
+}
 
 /*
  * Name:		uri_entered_cb
@@ -23,32 +53,36 @@ comm_channel channel[UNRECLAIMED_TAB_COUNTER];
  *			process.
  */
 void uri_entered_cb(GtkWidget* entry, gpointer data) {
-  if (!data)
-    return;
-  browser_window* b_window = (browser_window*) data;
-  comm_channel channel = b_window->channel;
+	if (!data)
+		return;
+	browser_window* b_window = (browser_window*) data;
+	comm_channel channel = b_window->channel;
+	// Get the tab index where the URL is to be rendered
+	int tab_index = query_tab_id_for_request(entry, data);
+	if (tab_index <= 0) {
+		fprintf(stderr, "Error: entered bad tab ID\n");
+		errno = EINVAL;
+		return;
+	}
 
-  // Get the tab index where the URL is to be rendered
-  int tab_index = query_tab_id_for_request(entry, data);
-  if (tab_index <= 0) {
-    // Append code for error handling
-    printf("ERROR! please enter a tab index that exists.");
-  } else {
-    // 4.2.3.a in the project description
-    // Get the URL.
-    char* uri = get_entered_uri(entry);
+	// Get the URL.
+	char* uri = get_entered_uri(entry);
+	// Prepare 'request' packet to send to router (/parent) process.
+	// Append your code here
+	child_req_to_parent new_req;
+	new_req.type = NEW_URI_ENTERED;
+	strcpy(new_req.req.uri_req.uri, uri);
+	new_req.req.uri_req.render_in_tab = tab_index;
 
-    // Prepare 'request' packet to send to router (/parent) process.
-    // Append your code here
-    child_req_to_parent new_req;
-    new_req.type = NEW_URI_ENTERED;
-    new_req.req.uri_req.render_in_tab = tab_index;
-    strcpy(new_req.req.uri_req.uri, uri);
-    write(channel.child_to_parent_fd[1], &new_req, sizeof(child_req_to_parent));
-  }
+	// send request to router
+	if (write(channel.child_to_parent_fd[1], &new_req,
+			sizeof(child_req_to_parent)) == -1) {
+		perror("Error sending URI change request to router");
+	};
 }
 
 /*
+
  * Name:		new_tab_created_cb
  * Input arguments:	'button' - whose click generated this callback
  *			'data' - auxillary data passed along for handling
@@ -62,208 +96,300 @@ void uri_entered_cb(GtkWidget* entry, gpointer data) {
  *			and managing this new tab.
  */
 void new_tab_created_cb(GtkButton *button, gpointer data) {
-  if (!data)
-    return;
-  int tab_index = ((browser_window*) data)->tab_index;
-  comm_channel channel = ((browser_window*) data)->channel;
+	if (!data)
+		return;
+	int tab_index = ((browser_window*) data)->tab_index;
+	comm_channel channel = ((browser_window*) data)->channel;
 
-  // Create a new request
-  child_req_to_parent new_req;
-  // Append your code here
-  // The CONTROLLER procress sends a CREATE_TAB message to the ROUTER process.
-  new_req.type = CREATE_TAB;
-  new_req.req.new_tab_req.tab_index = tab_index;
-  write(channel.child_to_parent_fd[1], &new_req, sizeof(child_req_to_parent));
+	// Create a new request of type CREATE_TAB
+
+	child_req_to_parent new_req;
+	new_req.type = CREATE_TAB;
+	new_req.req.new_tab_req.tab_index = tab_index;
+	//Append your code here
+	// Send create tab message to the router
+	if (write(channel.child_to_parent_fd[1], &new_req,
+			sizeof(child_req_to_parent)) == -1) {
+		perror("Error sending tab creation message to router");
+	}
+}
+
+/*
+ * name: run_controller
+ * Input parameters: comm_channel channel
+ * Output: void
+ * Function: When run in a controller process, this function will initialize the GUI
+ * and run the GTK blocking show_browser() function.
+ */
+int run_controller(comm_channel channel) {
+	browser_window* b_window = NULL;
+	create_browser(CONTROLLER_TAB, 0, (G_CALLBACK) (&new_tab_created_cb),
+			(G_CALLBACK) (&uri_entered_cb), &b_window, channel);
+	show_browser();
+	// show_browser is blocking for as long as the controller window exists, 
+	// so when we reach here the user has closed the window. exit the process.
+	exit(0);
+}
+
+/*
+ * name: run_tab
+ * Input Parameters: comm_channel channel, int index
+ * Output: void
+ * Function: When run in a tab process, this function will set up the GUI and respond to
+ *          incoming messages from the router.
+ */
+int run_tab(comm_channel channel, int index) {
+	if (index <= 0) {
+		errno = EINVAL;
+		return -1;
+	}
+	browser_window *b_window = NULL;
+	create_browser(URL_RENDERING_TAB, index,
+			(G_CALLBACK) (&new_tab_created_cb), (G_CALLBACK) (&uri_entered_cb),
+			&b_window, channel);
+
+	child_req_to_parent incoming_req;
+	int read_ret;
+	while (1) {
+		read_ret = read(channel.parent_to_child_fd[0], &incoming_req,
+				sizeof(child_req_to_parent));
+		if (read_ret == -1 && errno != EAGAIN) {
+			perror("Error reading message from router to tab process");
+		} else if (read_ret > 0) {
+			switch (incoming_req.type) {
+			case CREATE_TAB:
+				// Ignore this message
+				break;
+			case NEW_URI_ENTERED:
+				render_web_page_in_tab(incoming_req.req.uri_req.uri, b_window);
+				break;
+			case TAB_KILLED:
+				process_all_gtk_events();
+				exit(0);
+				break;
+			default:
+				printf(
+						"Error: invalid message received from router. type: %d; read_ret: %d",
+						incoming_req.type, read_ret);
+				break;
+			}
+		} else if (read_ret == 0) {
+			// Router is dead, kill self.
+			fprintf(stderr,
+					"Router died without sending kill message. Ending processes");
+			process_all_gtk_events();
+			exit(1);
+		}
+		// Now handle GTK events
+		process_single_gtk_event();
+	}
 }
 
 int main() {
-  // Append your code here
-  // The ROUTER process creates two pipes for bi-directional communication with the CONTROLLER process
-  pipe(channel[0].child_to_parent_fd);
-  pipe(channel[0].parent_to_child_fd);
-  int tab_index = 0;
-  int open_tabs = 0;
+	int controller_pid, i;
 
-  // 4.1.1.b it forks the new child process, the CONTROLLER process:
-  int pid = fork();
-  if (pid == 0) {
-    // ************************************************************************
-    // CONTROLLER PROCESS
-    // ************************************************************************
-    close(channel[0].child_to_parent_fd[0]);
-    close(channel[0].parent_to_child_fd[1]);
+	// Now in the router process
+	// Begin by setting up pipes for communication between router and controller
+	int router_to_controller[2], controller_to_router[2];
 
-    // Upon the CONTROLLER's creation, the show_browser() function is called which is a blocking call
-    // which returns when the user closes the CONTROLLER window.
-    browser_window* controller = NULL;
-    create_browser(CONTROLLER_TAB, 0, (void(*)(void)) &new_tab_created_cb, (void(*)(void)) &uri_entered_cb,
-        &controller, channel[0]);
-    // The CONTROLLER process exits with the return status of 0 when the user closes the CONTROLLER window
-    show_browser();
-    exit(0);
-    // ************************************************************************
-    // END CONTROLLER PROCESS
-    // ************************************************************************
-  } else {
-    // ************************************************************************
-    // ROUTER PROCESS
-    // ************************************************************************
-    tab_index++;
-    open_tabs++;
-    close(channel[0].parent_to_child_fd[0]);
-    close(channel[0].child_to_parent_fd[1]);
-    // ROUTER process polls on the set of open pipe file descriptors created before forking the child process
-    // in a loop.
-    int flags = fcntl(channel[0].child_to_parent_fd[0], F_GETFL);
-    flags |= O_NONBLOCK;
-    fcntl(channel[0].child_to_parent_fd[0], F_SETFL, flags);
+	int tab_to_router[2]; //pipe handles from tabs to router
+	int router_to_tab[MAX_TABS][2]; //pipe handles from router to tabs
+	int num_tabs = 0;
 
-    while (open_tabs > 0) {
-      int i;
-      for (i = 0; i < tab_index; i++) {
-        // The non-blocking read reads data from te pipe and if no data is available, the read system call
-        // will return immediately with return value of -1 and errno set to EAGAIN.
-        child_req_to_parent new_req;
-        int nread = read(channel[i].child_to_parent_fd[0], &new_req, sizeof(child_req_to_parent));
-        // If the above comment occurs then it will continue with the polling.  To reduce CPU consuption in
-        // usleep of 10 is used between reads 
-        if (nread == -1 && errno == EAGAIN) {
-          // printf("router got no messages...\n");
-          usleep(10);
-        } else if (nread > 0) {
-          // If read returns with data, the data is read into a buffer of type child_req_to_parent
-          // printf("router got a message!\n");
-          // CREATE TAB *******************************************************
-          if (new_req.type == CREATE_TAB) {
-            // printf("router creating tab...\n");
-            pipe(channel[tab_index].parent_to_child_fd);
-            pipe(channel[tab_index].child_to_parent_fd);
-            // Upon reciveing the message, the ROUTER process forts a URL-RENDERING process
-            // The ROUTER process first creates 2 pipes for bidirectional communication with the child
-            // process and then forks the URL-RENDERING child process.
-            int tab_pid = fork();
-            if (tab_pid == 0) {
-              // **************************************************************
-              // TAB PROCESS
-              // **************************************************************
-              // printf("tab created.\n");
-              comm_channel tab_comm = channel[tab_index];
-              close(tab_comm.parent_to_child_fd[1]);
-              close(tab_comm.child_to_parent_fd[0]);
+	// Set up available tab array
+	for (i = 1; i <= UNRECLAIMED_TAB_COUNTER; i++) {
+		available_IDs[i - 1] = 1;
+	}
 
-              // Creates the tab process
-              browser_window* tab = NULL;
-              create_browser(URL_RENDERING_TAB, tab_index, (void(*)(void)) &new_tab_created_cb,
-                  (void(*)(void)) &uri_entered_cb, &tab, tab_comm);
+	if (pipe(router_to_controller) == -1)
+		perror("Error creating pipe from router to controller");
+	if (pipe(controller_to_router) == -1)
+		perror("Error creating pipe from controller to router");
+	if (pipe(tab_to_router) == -1)
+		perror("Error creating pipe from tabs to router");
 
-              int flags = fcntl(tab_comm.parent_to_child_fd[0], F_GETFL);
-              flags |= O_NONBLOCK;
-              fcntl(tab_comm.parent_to_child_fd[0], F_SETFL, flags);
+	// Now we can fork off the controller
+	controller_pid = fork();
+	if (controller_pid == 0) {
+		// child (controller) here. close appropriate pipe ends for one-way comm.
+		close(router_to_controller[1]);
+		close(controller_to_router[0]);
 
-              int kill_tab = 0;
-              while (kill_tab == 0) {
-                child_req_to_parent new_req_tab;
-                int nread_tab = read(tab_comm.parent_to_child_fd[0], &new_req_tab, sizeof(child_req_to_parent));
-                if (nread_tab == -1 && errno == EAGAIN) {
-                  usleep(10);
-                  // printf("tab %i got no messages...\n", tab_index);
-                } else if (nread_tab > 0) {
-                  // printf("tab %i got a message!\n", tab_index);
-                  // If the message type is NEW_URL_ENTERED, then the URL-RENDERING process renders the
-                  // requested url by invoking render_web_page_in_tab() of  the wrapper-library
-                  // NEW URI PASSED TO TAB ************************************
-                  if (new_req_tab.type == NEW_URI_ENTERED) {
-                    // printf("new uri requested.\n");
-                    render_web_page_in_tab(new_req_tab.req.uri_req.uri, tab);
-                  }
-                  // If the message type is TAB_KILLED then process_all_gtk_events() function of the
-                  // wrapper library is invoked and the process exits with the return status of 0
-                  // TAB ASKED TO TERMINATE ***********************************
-                  else if (new_req_tab.type == TAB_KILLED) {
-                    // printf("closing tab...\n");
-                    process_all_gtk_events();
-                    close(channel[tab_index].parent_to_child_fd[0]);
-                    close(channel[tab_index].child_to_parent_fd[1]);
-                    kill_tab = 1;
-                  } /* CREATE_TAB occurs, which is then ignored */
-                  else if (new_req_tab.type == CREATE_TAB) {
-                    // error? ignore
-                  } else {
-                    // error? no type specified
-                    perror("No type specified or incorrectly specified, closing tab.");
-                    process_all_gtk_events();
-                    close(channel[tab_index].parent_to_child_fd[0]);
-                    close(channel[tab_index].child_to_parent_fd[1]);
-                    kill_tab = 1;
-                  }
-                } else {
-                  // read didn't get any data.
-                  perror("No data was supplied, please try again");
-                }
-                // The GTK events are processed
-                process_single_gtk_event();
-              }
+		comm_channel channel;
+		channel.parent_to_child_fd[0] = router_to_controller[0];
+		channel.parent_to_child_fd[1] = 0;
+		channel.child_to_parent_fd[0] = 0;
+		channel.child_to_parent_fd[1] = controller_to_router[1];
+		// now run the controller setup function.
+		if (run_controller(channel) == -1) {
+			perror("Error running controller process");
+			exit(1);
+		}
+		// We should never get to this point, but clean up anyway if we do.
+		exit(1);
+	} else if (controller_pid < 0) {
+		perror("Error forking controller process: ");
+	}
+	// Now we're back in the router process. Set up pipes properly for communication with controller.:
+	close(router_to_controller[0]);
+	close(controller_to_router[1]);
 
-              // printf("tab %i closed.\n", tab_index);
-              exit(0);
-              // **************************************************************
-              // END TAB PROCESS
-              // **************************************************************
-            } else {
-              close(channel[tab_index].parent_to_child_fd[0]);
-              close(channel[tab_index].child_to_parent_fd[1]);
+	// set up the reads on the controller->router and tab->router pipes to be nonblocking
+	int flags;
+	flags = fcntl(controller_to_router[0], F_GETFL, 0);
+	if (flags == -1)
+		perror("Error getting pipe flags");
+	flags |= O_NONBLOCK;
+	if (fcntl(controller_to_router[0], F_SETFL, flags) == -1)
+		perror("Error setting pipe to be nonblocking");
 
-              int flags = fcntl(channel[tab_index].child_to_parent_fd[0], F_GETFL);
-              flags |= O_NONBLOCK;
-              fcntl(channel[tab_index].child_to_parent_fd[0], F_SETFL, flags);
+	if ((flags = fcntl(tab_to_router[0], F_GETFL, 0)) == -1)
+		perror("Error getting pipe flags");
+	flags |= O_NONBLOCK;
+	if (fcntl(tab_to_router[0], F_SETFL, flags) == -1)
+		perror("Error setting pipe to be nonblocking");
 
-              tab_index++;
-              open_tabs++;
-            }
-          }
-          // If the message is NEW_URI_ENTERED the message specifies the URL to be rendered along
-          // with tab index on which the URL should be rendered.  Upon recieving this message, the
-          // ROUTER process simply writes the message on the pipe connecting the ROUTER process and
-          // the corresponding URL-RENDERING process
-          // NEW URI ENTERED **************************************************
-          else if (new_req.type == NEW_URI_ENTERED) {
-            // printf("passing uri message to child...\n");
-            write(channel[new_req.req.uri_req.render_in_tab].parent_to_child_fd[1], &new_req,
-                sizeof(child_req_to_parent));
-          }
-          // If the message is of type TAB_KILLED then the message contains the tab-index of the
-          // recently closed tab.  The ROUTER process closes the file descriptors of the corresponding
-          // pipe which was created for communication with the closed tab. 
-          // TAB KILLED *******************************************************
-          else if (new_req.type == TAB_KILLED) {
-            // printf("router closing tab %i...\n", new_req.req.killed_req.tab_index);
-            // printf("tabs left: %i.\n", open_tabs - 1);
-            write(channel[new_req.req.killed_req.tab_index].parent_to_child_fd[1], &new_req,
-                sizeof(child_req_to_parent));
+	// the compiler was getting cranky when declaring variables inside the switch statement
+	child_req_to_parent incoming_req, kill_req;
+	int read_ret, killed_id, tab_id;
+	int tab_pid, destination;
+	while (1) {
+		// check for messages from the controller
+		read_ret = read(controller_to_router[0], &incoming_req,
+				sizeof(child_req_to_parent));
 
-            close(channel[new_req.req.killed_req.tab_index].parent_to_child_fd[1]);
-            close(channel[new_req.req.killed_req.tab_index].child_to_parent_fd[0]);
-            open_tabs--;
-          } else {
-            // error? no type specified
-            perror("No type specified or incorrectly specified");
-          }
-        } else {
-          // error? fd is closed
-          // perror("The file descriptor is closed");
-          // not an error, if tab one is closed, it's file descriptors will still try and
-          // be read as part of the loop.
-        } // end else [if (nread == -1 && errno == EAGAIN)] [if (nread > 0)]
+		if (read_ret == -1 && errno != EAGAIN) {
+			// Something went wrong
+			perror("Error reading from controller to router pipe");
+		} else if (read_ret > 0) {
+			switch (incoming_req.type) {
 
-      } // for (i = 0; i < tab_index; i++)
+			case CREATE_TAB:
+				tab_id = getAvailableTabID();
+				if (tab_id == -1) {
+					fprintf(stderr,
+							"Error: the maximum number of tabs allowed already exist.\n");
+					break;
+				}
+				available_IDs[tab_id - 1] = 0;
+				num_tabs++;
+				/* set up pipes to/from new tab
+				 * router_to_tab is indexed so that router_to_tab[n- 1] 
+				 * is the pipe going from the router to tab n.
+				 */
+				if (pipe(router_to_tab[tab_id - 1]) == -1) {
+					perror("Error creating pipe to new tab process");
+				}
 
-    } // end while (open_tabs > 0)
+				// set fds to have non-blocking reads.
+				flags = fcntl(router_to_tab[tab_id - 1][0], F_GETFL, 0);
+				if (flags == -1)
+					perror("Error reading pipe flags");
+				flags |= O_NONBLOCK;
+				if (fcntl(router_to_tab[tab_id - 1][0], F_SETFL, flags) == -1)
+					perror("Error setting pipe to be nonblocking");
+				tab_pid = fork();
+				if (tab_pid == 0) {
+					// new tab process
+					close(tab_to_router[0]);
+					close(router_to_tab[tab_id - 1][1]);
+					// call tab function with file handles to_router & from_router
+					comm_channel channel;
+					channel.parent_to_child_fd[0]
+							= router_to_tab[tab_id - 1][0];
+					channel.parent_to_child_fd[1] = 0;
+					channel.child_to_parent_fd[0] = 0;
+					channel.child_to_parent_fd[1] = tab_to_router[1];
+					if (run_tab(channel, tab_id) == -1) {
+						perror("Error creating new tab");
+						exit(1);
+					}
+					// We should never get to this point, but clean up anyway if we do.
+					exit(1);
+				} else if (tab_pid == -1) {
+					perror("Error forking new tab process.");
+				}
+				break;
 
-  } // end else [if (pid == 0)]
-  // When all browsing windows are closed, the ROUTER process exits with a return status of 0
-  return 0;
-  // ************************************************************************
-  // ROUTER PROCESS
-  // ************************************************************************
+			case NEW_URI_ENTERED:
+				// We can pass this directly on to the desired tab
+				destination = incoming_req.req.uri_req.render_in_tab;
+				if (destination > UNRECLAIMED_TAB_COUNTER
+						|| available_IDs[destination - 1] == 1) {
+					fprintf(stderr,
+							"Error: tried to change URL of non-existent tab\n");
+				} else {
+					if (write(router_to_tab[destination - 1][1], &incoming_req,
+							sizeof(child_req_to_parent)) == -1) {
+						perror("Error sending URI change request to tab");
+					}
+				}
+
+				break;
+
+			case TAB_KILLED:
+				killed_id = incoming_req.req.killed_req.tab_index;
+				// Controller is dead - kill all tabs and exit
+				kill_req.type = TAB_KILLED;
+				kill_req.req.killed_req.tab_index = 0;
+				/* Tabs are indexed from 1 to UNRECLAIMED_TAB_COUNTER, so loop over that
+				 *  and check if the tab actually exists (available_IDs[id - 1] == 0).
+				 */
+				for (i = 1; i <= UNRECLAIMED_TAB_COUNTER; i++) {
+					if (available_IDs[i - 1] == 0 && write(
+							router_to_tab[i - 1][1], &kill_req,
+							sizeof(child_req_to_parent)) == -1)
+						perror("Error sending kill message to tab");
+				}
+				exit(0);
+				break;
+
+			default:
+				perror("Error: bad message from controller process");
+				fprintf(stderr, "Type: %d, read_ret = %d\n", incoming_req.type,
+						read_ret);
+				break;
+			}
+		} else if (read_ret == 0) {
+			// Controller is dead but didn't send the killed message. Perform cleanup and exit...
+			fprintf(stderr, "Controller crashed. Ending all processes.\n");
+			child_req_to_parent kill_req;
+			kill_req.type = TAB_KILLED;
+			kill_req.req.killed_req.tab_index = 0;
+			for (i = 1; i <= UNRECLAIMED_TAB_COUNTER; i++) {
+				if (available_IDs[i - 1] == 0 && write(router_to_tab[i - 1][1],
+						&kill_req, sizeof(child_req_to_parent)) == -1)
+					perror("Error sending kill message to tab");
+			}
+			exit(0);
+		}
+
+		// Now check for any messages from tab processes (Did one kill itself?)
+		do { // possibly more than one message in pipe, loop until it's empty.
+			read_ret = read(tab_to_router[0], &incoming_req,
+					sizeof(child_req_to_parent));
+
+			if (read_ret == -1 && errno != EAGAIN) {
+				perror("Error reading from controller to router pipe");
+			} else if (read_ret != -1 && incoming_req.type == TAB_KILLED) {
+				num_tabs--;
+				int closed_index = incoming_req.req.killed_req.tab_index;
+				available_IDs[closed_index - 1] = 1;
+				if (write(router_to_tab[closed_index - 1][1], &incoming_req,
+						sizeof(child_req_to_parent)) == -1)
+					perror("Error sending kill request to tab");
+				else
+					wait(NULL); // wait so no zombie processes exist.
+				close(router_to_tab[closed_index - 1][1]);
+			} else if (read_ret != -1) {
+				printf("Bad message from tab.");
+			}
+		} while (read_ret != -1); // read_ret == -1 -> pipe is empty.
+
+		usleep(1000); // wait 1ms before checking pipes again
+
+
+	}
+	return 0;
 }
 
